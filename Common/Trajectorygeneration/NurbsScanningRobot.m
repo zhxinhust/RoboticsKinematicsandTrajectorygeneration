@@ -25,7 +25,17 @@ stepnum = 1;    % 记录点数
 u = 0; du = 0.0005;
 uarr = 0:du:1;
 Jarr = zeros(6, 6, length(uarr));   % 保存分析雅克比矩阵，减少重复计算
+TderA = zeros(6, 6, length(uarr));
+TderE = zeros(6, 6, length(uarr));
+T = zeros(6, 6, length(uarr));
+Jder = zeros(6, 6, 6, length(uarr));
 
+feedratemax = zeros(length(uarr));
+error = zeros(length(uarr));
+
+scanpders = zeros(length(uarr), 18);
+joint = zeros(length(uarr), 6);
+               
 for u = 0:du:1
    deboorp = DeBoorCoxNurbsCal(u, BSplinepath, 2);
    % 保存数据
@@ -61,30 +71,46 @@ for u = 0:du:1
     end
     joint(stepnum, :) = theta(minindex, :); % 计算当前位置处关节角度值
     
-    Jarr(:, :, stepnum) = jacobiananalytical(joint(stepnum, :), deboorp(1, 4), deboorp(1, 5));   % 求分析雅克比矩阵
+    % 求分析雅克比矩阵
+    Jarr(:, :, stepnum) = jacobiananalytical(joint(stepnum, :), deboorp(1, 4), deboorp(1, 5));  
+    p = scanpders(stepnum, 1:6);
+    % 计算矩阵T
+    T(1:3, 1:3, stepnum) = eye(3);
+    T(4:6, 4:6, stepnum) = [0, -sin(p(4)), cos(p(4)) * sin(p(5));
+               0, cos(p(4)), sin(p(4)) * sin(p(5));
+               1, 0, cos(p(5))];
+    
+    % 计算dT/dA
+    TderA(4, 5, stepnum) = -cos(p(4));
+    TderA(4, 6, stepnum) = -sin(p(4)) * sin(p(5));
+    TderA(5, 5, stepnum) = -sin(p(4));
+    TderA(5, 6, stepnum) = cos(p(4)) * sin(p(5));
+    
+    % 计算dT/dE
+    TderE(4, 6, stepnum) = -cos(p(4)) * cos(p(5));
+    TderE(5, 6, stepnum) = sin(p(4)) * cos(p(5));
+    TderE(6, 6, stepnum) = -sin(p(5));
+    
+    % 求dJ/d theta j
+    for j = 1:6
+        Jder(:, :, j, stepnum) = Jdifferentiation_j(joint(stepnum, :), j);
+    end
     
     pathderunit = deboorp(2, :) / norm(deboorp(2, 1:3));    % 得到单位化的速度量
     pathderunit(4:6) = pathderunit(4:6) / 180 * pi;
-    
-    % d(stepnum) = norm(deboorp(2, 1:3));
-    
+        
     temp = Jarr(:, :, stepnum) \ pathderunit';
-    
     v = min(abs(axismaxvel) ./ abs(temp'));  % 计算根据各轴最大速度约束下
-    
     v = min(maxfeedrate, v);
-
     
     while 1
-        
         unext = u + v * Ts / norm(deboorp(2, 1:3));
-    
         deboorpnext = DeBoorCoxNurbsCal(unext, BSplinepath, 1);
 
         g2 = Tu * enlerangle2rotatemat(deboorpnext(1, 1:3), deboorpnext(1, 4:6)) / Tt;    
 
         theta2 = inversekinamicsDH2(g2); % 运动学逆解
-        % 选解，这里采用相对于上一位置关节变化最小的点作为接
+        % 选解，这里采用相对于上一位置关节变化最小的点作为解
         mindis = 100;
         minindex = 1;
 
@@ -121,32 +147,18 @@ for u = 0:du:1
 end
 
 for i = length(uarr):-1:1
-    p = scanpders(i, 1:6);
-    pd = scanpders(i, 7:12);
-    pdd = scanpders(i, 13:18);
-    jp = joint(i, :);
-    Ja = Jarr(:, :, i);
+    p = scanpders(i, 1:6);      % 笛卡尔空间位置
+    pd = scanpders(i, 7:12);    % 笛卡尔空间路径一阶导
+    pdd = scanpders(i, 13:18);  % 笛卡尔空间路径二阶导
+    jp = joint(i, :);           % 关节空间位置
+    Ja = Jarr(:, :, i);         % 分析雅克比
     
-    pnorm = p / norm(p(1:3));
-    pdnorm = pd / norm(pd(1:3));
+    pdnorm = pd / norm(pd(1:3));    % 将一阶导单位化，并化为弧度制
+    pdnorm(4:6) = pdnorm(4:6) * pi / 180;
+    pddnorm = pdd / norm(pdd(1:3)); % 将二阶导单位化，并化为弧度制
+    pddnorm(4:6) = pddnorm(4:6) * pi / 180;
     
-    TderA = zeros(6, 6);
-    TderE = zeros(6, 6);
     
-    TderA(4, 5) = -cos(p(4));
-    TderA(4, 6) = -sin(p(4)) * sin(p(5));
-    TderA(5, 5) = -sin(p(4));
-    TderA(5, 6) = cos(p(4)) * sin(p(5));
-    
-    TderE(4, 6) = -cos(p(4)) * cos(p(5));
-    TderE(5, 6) = sin(p(4)) * cos(p(5));
-    TderE(6, 6) = -sin(p(5));
-    
-    T = eye(6);
-    T(4:6, 4:6) = [0, -sin(p(4)), cos(p(4)) * sin(p(5));
-                   0, cos(p(4)), sin(p(4)) * sin(p(5));
-                   1, 0, cos(p(5))];
-               
     
 end
 
