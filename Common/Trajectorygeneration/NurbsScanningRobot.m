@@ -1,8 +1,25 @@
-function feedratemax = NurbsScanningRobot(BSplinepath, interpolationperiod)
+function feedratemax = NurbsScanningRobot(Bsplinepath, interpolationperiod)
 
 global Tu;  % 用户坐标系
 global Tt;  % 工具坐标系
 global jointinit;   % 初始点关节值
+
+global arcLength;
+
+global simpsonVector;       % 用来保存用辛普森公式迭代计算出来的(u, l)值
+global simpsonVectorIndex;  % 此变量为上数据点的数量
+
+arcLength = 0;
+simpsonVector = 0;
+simpsonVectorIndex = 1;
+
+global knotvector;
+global controlp;
+global splineorder;
+
+controlp = Bsplinepath.controlp;
+knotvector = Bsplinepath.knotvector;
+splineorder = Bsplinepath.splineorder;
 
 % 设定约束条件
 chorderror = 0.0002;
@@ -35,9 +52,11 @@ error = zeros(length(uarr));
 
 scanpders = zeros(length(uarr), 18);
 joint = zeros(length(uarr), 6);
+
+seglenth = zeros(length(uarr) - 1, 1);
                
 for u = 0:du:1
-   deboorp = DeBoorCoxNurbsCal(u, BSplinepath, 2);
+   deboorp = DeBoorCoxNurbsCal(u, Bsplinepath, 2);
    % 保存数据
    scanpders(stepnum, 1:6) = deboorp(1, :);
    scanpders(stepnum, 7:12) = deboorp(2, :);
@@ -71,8 +90,8 @@ for u = 0:du:1
     end
     joint(stepnum, :) = theta(minindex, :); % 计算当前位置处关节角度值
     
-    % 求分析雅克比矩阵
-    Jarr(:, :, stepnum) = jacobiananalytical(joint(stepnum, :), deboorp(1, 4), deboorp(1, 5));  
+    % 求几何雅克比矩阵
+    Jarr(:, :, stepnum) = jacobiangeometric(joint(stepnum, :));  
     p = scanpders(stepnum, 1:6);
     % 计算矩阵T
     T(1:3, 1:3, stepnum) = eye(3);
@@ -96,6 +115,13 @@ for u = 0:du:1
         Jder(:, :, j, stepnum) = Jdifferentiation_j(joint(stepnum, :), j);
     end
     
+    arcLength = 0;
+    % 计算各段弧长    
+    if u > 0
+        IterativeCalArcLength2(u - du, u);
+        seglenth(stepnum - 1) = arcLength;
+    end
+    
     pathderunit = deboorp(2, :) / norm(deboorp(2, 1:3));    % 得到单位化的速度量
     pathderunit(4:6) = pathderunit(4:6) / 180 * pi;
         
@@ -105,7 +131,7 @@ for u = 0:du:1
     
     while 1
         unext = u + v * Ts / norm(deboorp(2, 1:3));
-        deboorpnext = DeBoorCoxNurbsCal(unext, BSplinepath, 1);
+        deboorpnext = DeBoorCoxNurbsCal(unext, Bsplinepath, 1);
 
         g2 = Tu * enlerangle2rotatemat(deboorpnext(1, 1:3), deboorpnext(1, 4:6)) / Tt;    
 
@@ -146,19 +172,39 @@ for u = 0:du:1
     stepnum = stepnum + 1;
 end
 
-for i = length(uarr):-1:1
-    p = scanpders(i, 1:6);      % 笛卡尔空间位置
-    pd = scanpders(i, 7:12);    % 笛卡尔空间路径一阶导
-    pdd = scanpders(i, 13:18);  % 笛卡尔空间路径二阶导
-    jp = joint(i, :);           % 关节空间位置
-    Ja = Jarr(:, :, i);         % 分析雅克比
-    
-    pdnorm = pd / norm(pd(1:3));    % 将一阶导单位化，并化为弧度制
-    pdnorm(4:6) = pdnorm(4:6) * pi / 180;
-    pddnorm = pdd / norm(pdd(1:3)); % 将二阶导单位化，并化为弧度制
-    pddnorm(4:6) = pddnorm(4:6) * pi / 180;
-    
-    
+% 将首尾两点处速度设为0
+feedratemax(1, 2) = 0;
+feedratemax(end, 2) = 0;
+
+for i = length(uarr):-1:1 
+    if i > 1
+        if feedratemax(i - 1, 2) > feedratemax(i, 2)  % 如果第 i - 1的速度大于第i点的速度，那么计算是否需要调整
+            % 先确定当前i点处允许的最大加速度
+            p = scanpders(i, 1:6);      % 笛卡尔空间位置
+            pd = scanpders(i, 7:12);    % 笛卡尔空间路径一阶导
+            pdd = scanpders(i, 13:18);  % 笛卡尔空间路径二阶导
+            jp = joint(i, :);           % 关节空间位置
+            Ja = Jarr(:, :, i);         % 分析雅克比
+
+            pdnorm = pd / norm(pd(1:3));    % 将一阶导单位化，并化为弧度制
+            pdnorm(4:6) = pdnorm(4:6) * pi / 180;
+            pddnorm = pdd / norm(pdd(1:3)); % 将二阶导单位化，并化为弧度制
+            pddnorm(4:6) = pddnorm(4:6) * pi / 180;
+
+            Jinv = inv(Jarr(:, :, i));  % 求第i个雅克比矩阵的逆
+            
+            Temp1 = zeros(6, 6);
+            Temp2 = zeros(6, 6);
+            for j = 1:6
+                Temp1 = Temp1 + pdnorm(j) * T(:, :, i)' * Jinv' * Jder(:, :, j, i) * Jinv * T(:, :, i);
+            end
+            Temp2 = pdnorm(4) * TderA(:, :, i) + pdnorm(5) * TderE(:, :, i);
+            
+            feedtemp = feedratemax(i, 2) ^ 2 * Jinv * (Temp1 - Temp2) * pdnorm';
+            
+            feedtemp2(i, :) = Jinv * T(:, :, i) * pddnorm';
+        end
+    end
     
 end
 

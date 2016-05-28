@@ -43,6 +43,8 @@ subArcToltal = ArcLengthSimpson(subStartPoint, subEndPoint);
 
 if (abs(subArcLengthUpHalf + subArcLengthLowerHalf - subArcToltal) < simpsonErr)
 	arcLength = arcLength + subArcToltal;	% 如果满足要求则累加这半段长度
+	simpsonVector(simpsonVectorIndex, 1) = subEndPoint;
+	simpsonVector(simpsonVectorIndex, 2) = simpsonVector(simpsonVectorIndex - 1, 2) + subArcToltal;
 else
 	IterativeCalArcLength2(subStartPoint, subEndPoint);	%如果不满足误差要求，则继续二分进行迭代
 end
